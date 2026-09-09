@@ -7,13 +7,13 @@ from pathlib import Path
 import geopandas as gpd
 import rasterio
 from rasterio.windows import Window
-from shapely.geometry import MultiPolygon, Polygon, box
+from shapely.geometry import MultiPolygon, Polygon
 from shapely.ops import unary_union
 
 from src.common.config import CATASTRO_DIR, PROCESSED_DATA_DIR
+from src.common.fs import clear_directory
 
 DEFAULT_IMAGES_DIR = CATASTRO_DIR / "building_crops"
-DEFAULT_MASKS_DIR = CATASTRO_DIR / "sam_masks"
 DEFAULT_OUTPUT_DIR = PROCESSED_DATA_DIR / "yolo"
 METRIC_CRS = "EPSG:25830"
 
@@ -28,8 +28,6 @@ def _pixel_bounds(geometry, transform: rasterio.Affine) -> tuple[float, float, f
 def _square_window(
     geometry,
     transform: rasterio.Affine,
-    width: int,
-    height: int,
     offset_pixels: int,
 ) -> Window:
     left, top, right, bottom = _pixel_bounds(geometry, transform)
@@ -81,38 +79,25 @@ def _polygon_lines(geometry, transform: rasterio.Affine, window: Window) -> list
 def prepare_sample(
     image_path: Path,
     building_path: Path,
-    mask_path: Path,
     image_output_dir: Path,
     label_output_dir: Path,
     offset_meters: float,
 ) -> bool:
     building_frame = gpd.read_file(building_path)
-    mask_frame = gpd.read_file(mask_path)
-    if (
-        building_frame.empty
-        or building_frame.crs is None
-        or mask_frame.empty
-        or mask_frame.crs is None
-    ):
+    if building_frame.empty or building_frame.crs is None:
         return False
 
     with rasterio.open(image_path) as source:
         building_frame = building_frame.to_crs(source.crs)
-        mask_frame = mask_frame.to_crs(source.crs)
         building_geometry = unary_union(
             [item for item in building_frame.geometry if item is not None and not item.is_empty]
         )
-        roof_geometry = unary_union(
-            [item for item in mask_frame.geometry if item is not None and not item.is_empty]
-        )
-        if building_geometry.is_empty or roof_geometry.is_empty:
+        if building_geometry.is_empty:
             return False
 
         window = _square_window(
             _buffer_geometry(building_geometry, source.crs, offset_meters),
             source.transform,
-            source.width,
-            source.height,
             0,
         )
         image = source.read(window=window, boundless=True, fill_value=0)
@@ -127,14 +112,13 @@ def prepare_sample(
 
     image_output_dir.mkdir(parents=True, exist_ok=True)
     label_output_dir.mkdir(parents=True, exist_ok=True)
-    output_name = image_path.name
-    output_image = image_output_dir / output_name
+    output_image = image_output_dir / image_path.name
     output_label = label_output_dir / f"{image_path.stem}.txt"
     with rasterio.open(output_image, "w", **profile) as destination:
         destination.write(image)
 
     lines = _polygon_lines(
-        roof_geometry,
+        building_geometry,
         crop_transform,
         Window(0, 0, image.shape[2], image.shape[1]),
     )
@@ -144,7 +128,6 @@ def prepare_sample(
 
 def prepare_dataset(
     images_dir: str | Path = DEFAULT_IMAGES_DIR,
-    masks_dir: str | Path = DEFAULT_MASKS_DIR,
     output_dir: str | Path = DEFAULT_OUTPUT_DIR,
     offset_meters: float = 10,
 ) -> int:
@@ -152,8 +135,7 @@ def prepare_dataset(
         raise ValueError("offset_meters must be non-negative")
 
     images_dir = Path(images_dir)
-    masks_dir = Path(masks_dir)
-    output_dir = Path(output_dir)
+    output_dir = clear_directory(output_dir)
     image_paths = sorted(images_dir.glob("building_*.tif"))
     if not image_paths:
         raise FileNotFoundError(f"No images found in {images_dir}")
@@ -161,17 +143,12 @@ def prepare_dataset(
     processed = 0
     for image_path in image_paths:
         building_path = image_path.with_suffix(".geojson")
-        mask_path = masks_dir / f"{image_path.stem}_mask.geojson"
         if not building_path.exists():
             print(f"Skipping {image_path}: Catastro geometry not found")
-            continue
-        if not mask_path.exists():
-            print(f"Skipping {image_path}: SAM mask not found")
             continue
         if prepare_sample(
             image_path,
             building_path,
-            mask_path,
             output_dir / "images",
             output_dir / "labels",
             offset_meters,
@@ -184,10 +161,9 @@ def prepare_dataset(
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Create square YOLO samples from Catastro crops and SAM masks"
+        description="Create square YOLO samples from Catastro building crops"
     )
     parser.add_argument("--images-dir", type=Path, default=DEFAULT_IMAGES_DIR)
-    parser.add_argument("--masks-dir", type=Path, default=DEFAULT_MASKS_DIR)
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
     parser.add_argument(
         "--offset-meters",
@@ -196,7 +172,7 @@ def main() -> None:
         help="Context added around the Catastro building on every side",
     )
     args = parser.parse_args()
-    prepare_dataset(args.images_dir, args.masks_dir, args.output_dir, args.offset_meters)
+    prepare_dataset(args.images_dir, args.output_dir, args.offset_meters)
 
 
 if __name__ == "__main__":

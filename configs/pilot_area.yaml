@@ -7,3 +7,10 @@ bbox:
   min_lat: 40.38
   max_lon: -3.82
   max_lat: 40.45
+
+# PNOA WMS download. Higher grid = smaller tiles = finer GSD.
+# Example: grid 10 + size 4096 ≈ 0.20–0.25 m/px on this bbox.
+pnoa:
+  grid: 10
+  size: 4096
+  fallback_size: 2048

@@ -7,6 +7,7 @@ from pyproj import Transformer
 from owslib.wfs import WebFeatureService
 
 from src.common.config import CATASTRO_DIR, get_bbox_tuple
+from src.common.fs import clear_directory
 from src.common.logger import get_logger
 
 logger = get_logger(__name__)
@@ -79,12 +80,14 @@ def download_catastro(
         *transformer.transform(max_lon, max_lat),
     )
 
-    tile_dir = CATASTRO_DIR / "tiles"
-    tile_dir.mkdir(parents=True, exist_ok=True)
-
-    # Keep tile GML files for QGIS and remove only GDAL sidecar files.
-    for tile_sidecar_file in tile_dir.glob("buildings_*.gfs"):
-        tile_sidecar_file.unlink()
+    CATASTRO_DIR.mkdir(parents=True, exist_ok=True)
+    tile_dir = clear_directory(CATASTRO_DIR / "tiles")
+    for stale_file in (
+        CATASTRO_DIR / "buildings.gml",
+        CATASTRO_DIR / "buildings.geojson",
+        CATASTRO_DIR / "response_preview.xml",
+    ):
+        stale_file.unlink(missing_ok=True)
 
     tile_frames = []
     tiles = list(_iter_tiles(projected_bbox))

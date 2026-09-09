@@ -185,3 +185,39 @@ def get_bbox_string() -> str:
     min_x, min_y, max_x, max_y = get_bbox_tuple()
 
     return f"{min_x},{min_y},{max_x},{max_y}"
+
+
+DEFAULT_PNOA_GRID = 5
+DEFAULT_PNOA_SIZE = 4096
+DEFAULT_PNOA_FALLBACK_SIZE = 2048
+
+
+def get_pnoa_settings() -> dict:
+    """
+    Return PNOA download settings from pilot_area.yaml.
+
+    Keys:
+        grid (int): number of tiles along X and Y
+        size (int): WMS request width/height in pixels
+        fallback_size (int): smaller size used after WMS failures
+    """
+
+    config = load_pilot_area() or {}
+    pnoa = config.get("pnoa") or {}
+
+    grid = int(pnoa.get("grid", DEFAULT_PNOA_GRID))
+    size = int(pnoa.get("size", DEFAULT_PNOA_SIZE))
+    fallback_size = int(pnoa.get("fallback_size", DEFAULT_PNOA_FALLBACK_SIZE))
+
+    if grid < 1:
+        raise ValueError("pnoa.grid must be >= 1")
+    if size < 1:
+        raise ValueError("pnoa.size must be >= 1")
+    if fallback_size < 1:
+        raise ValueError("pnoa.fallback_size must be >= 1")
+
+    return {
+        "grid": grid,
+        "size": size,
+        "fallback_size": fallback_size,
+    }

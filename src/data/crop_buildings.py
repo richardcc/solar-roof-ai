@@ -11,6 +11,7 @@ from rasterio.features import geometry_window, rasterize
 from shapely.geometry import box
 
 from src.common.config import CATASTRO_DIR, PNOA_DIR
+from src.common.fs import clear_directory
 
 DEFAULT_BUILDINGS_DIR = CATASTRO_DIR / "tiles"
 DEFAULT_TILES_DIR = PNOA_DIR / "tiles"
@@ -166,6 +167,7 @@ def crop_all_buildings(
     if not tile_paths:
         raise FileNotFoundError(f"No GeoTIFF tiles found in {tiles_dir}")
 
+    output_dir = clear_directory(output_dir)
     processed_ids: set[int] = set()
     total_saved = 0
     for tile_path in tile_paths:
