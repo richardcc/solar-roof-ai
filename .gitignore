@@ -22,3 +22,8 @@ exports/
 
 # Logs
 *.log
+
+# Notas locales / secretos
+wip.txt
+.env
+.env.*

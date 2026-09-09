@@ -107,7 +107,8 @@ elseif ($dirty -and -not $shouldCommit) {
 
 Write-Host "Bajando cambios (fetch + pull)..."
 Invoke-Git fetch origin
-Invoke-Git pull --rebase origin $Branch
+# --autostash guarda temporalmente cambios locales (p. ej. wip.txt) durante el rebase
+Invoke-Git pull --rebase --autostash origin $Branch
 
 Write-Host "Subiendo cambios (push)..."
 Invoke-Git push -u origin $Branch
