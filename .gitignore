@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.pyc
+
+# Entornos
+.venv/
+venv/
+
+# Modelos
+*.pt
+*.pth
+*.onnx
+
+# Datos
+data/
+datasets/
+tiles/
+exports/
+
+# VS Code
+.vscode/
+
+# Logs
+*.log

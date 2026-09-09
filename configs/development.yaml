@@ -1,0 +1,19 @@
+app:
+  name: solar-roof-ai
+  version: 0.1.0
+
+database:
+  host: localhost
+  port: 5432
+  database: solar_roof_ai
+  user: postgres
+  password: postgres
+
+model:
+  name: yolo11n-seg
+  device: cuda
+
+paths:
+  pnoa: data/raw/pnoa
+  catastro: data/raw/catastro
+  lidar: data/raw/lidar

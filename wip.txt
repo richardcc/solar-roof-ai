@@ -1,0 +1,43 @@
+cd C:\repos\python\solar-roof-ai
+
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+
+setx YOLO_CONFIG_DIR "C:\repos\python\solar-roof-ai"
+python -m src.data.download_pnoa
+python -m src.data.download_pnoa
+
+python -m src.data.crop_buildings --margin-meters 10
+python -m src.ai.sam_segment --model sam2_b.pt
+
+python -m src.data.crop_buildings --crop-mode shape --margin-meters 2
+--crop-mode shape
+
+python -m src.data.crop_buildings --crop-mode shape --margin-meters 2
+
+
+C:\repos\python\solar-roof-ai\data\raw\catastro\building_crops
+
+Remove-Item data/raw/catastro/building_crops/*.*
+python -m src.data.crop_buildings --crop-mode shape --margin-meters 2
+
+Remove-Item data/raw/catastro/sam_masks/*_mask.tif
+Remove-Item data/raw/catastro/sam_masks/*_mask.geojson
+python -m src.ai.sam_segment --model sam2_b.pt
+
+
+
+He añadido prepare_yolo_dataset.py para:
+
+Crear recortes cuadrados con offset configurable.
+Usar las máscaras SAM como segmentaciones YOLO.
+Generar un .txt por imagen con clase 0 para tej
+
+python -m src.data.prepare_yolo_dataset
+
+
+http://localhost:8090/auth/register
+cd C:\Users\Richard\cvat
+docker compose up -d
+richardcc
+L@ranoa42

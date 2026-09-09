@@ -1,0 +1,9 @@
+pilot_area:
+  municipality: Boadilla del Monte
+  province: Madrid
+
+bbox:
+  min_lon: -3.93
+  min_lat: 40.38
+  max_lon: -3.82
+  max_lat: 40.45
