@@ -3,21 +3,30 @@ from __future__ import annotations
 import argparse
 import os
 import time
+from pathlib import Path
 
+import geopandas as gpd
+import pandas as pd
 import requests
 import rasterio
 from rasterio.io import MemoryFile
 from rasterio.transform import from_bounds
+from shapely.geometry import box
 
 from src.common.config import (
+    CATASTRO_DIR,
     PNOA_DIR,
     get_bbox_tuple,
+    get_crop_settings,
     get_pnoa_settings,
 )
 from src.common.fs import clear_directory
+from src.data.catastro_filter import filter_buildings
 
 REQUEST_RETRIES = 3
 OUTPUT_DIR = PNOA_DIR / "tiles"
+GEOJSON_CRS = "EPSG:4326"
+METRIC_CRS = "EPSG:25830"
 
 # Servicio WMS PNOA
 WMS_URL = "https://www.ign.es/wms-inspire/pnoa-ma"
@@ -96,18 +105,122 @@ def _download_image(
     return fallback_response.content, fallback_size, fallback_size
 
 
+def load_catastro_buildings() -> gpd.GeoDataFrame:
+    """Load Catastro buildings required to filter PNOA tiles."""
+    buildings_path = CATASTRO_DIR / "buildings.geojson"
+    if buildings_path.exists():
+        buildings = gpd.read_file(buildings_path)
+    else:
+        tile_dir = CATASTRO_DIR / "tiles"
+        files = sorted(tile_dir.glob("buildings_*.geojson"))
+        if not files:
+            raise FileNotFoundError(
+                "Catastro buildings not found. Run first:\n"
+                "  python -m src.data.download_catastro\n"
+                f"Expected {buildings_path} or {tile_dir}/buildings_*.geojson"
+            )
+        frames = [gpd.read_file(path) for path in files]
+        buildings = gpd.GeoDataFrame(
+            pd.concat(frames, ignore_index=True),
+            crs=frames[0].crs,
+        )
+
+    if buildings.crs is None:
+        raise ValueError("Catastro buildings have no CRS")
+    buildings = buildings[buildings.geometry.notna() & ~buildings.geometry.is_empty]
+    buildings = filter_buildings(buildings)
+    if buildings.empty:
+        raise RuntimeError(
+            "Catastro filter left no buildings for PNOA. "
+            "Relax catastro.* in configs/pilot_area.yaml or re-run download_catastro"
+        )
+    return buildings.to_crs(GEOJSON_CRS)
+
+
+def select_tiles_with_buildings(
+    grid_x: int,
+    grid_y: int,
+    area_bbox: tuple[float, float, float, float],
+    margin_meters: float,
+) -> list[tuple[int, int, tuple[float, float, float, float]]]:
+    """Return (row, col, tile_bbox) cells that intersect Catastro buildings."""
+    buildings = load_catastro_buildings()
+    if margin_meters > 0:
+        buildings = (
+            buildings.to_crs(METRIC_CRS)
+            .assign(geometry=lambda frame: frame.buffer(margin_meters))
+            .to_crs(GEOJSON_CRS)
+        )
+
+    min_lon, min_lat, max_lon, max_lat = area_bbox
+    lon_step = (max_lon - min_lon) / grid_x
+    lat_step = (max_lat - min_lat) / grid_y
+    selected: list[tuple[int, int, tuple[float, float, float, float]]] = []
+
+    for row in range(grid_y):
+        for col in range(grid_x):
+            tile_min_lon = min_lon + col * lon_step
+            tile_max_lon = tile_min_lon + lon_step
+            tile_min_lat = min_lat + row * lat_step
+            tile_max_lat = tile_min_lat + lat_step
+            tile_box = box(tile_min_lon, tile_min_lat, tile_max_lon, tile_max_lat)
+            candidate_ids = list(buildings.sindex.intersection(tile_box.bounds))
+            if not candidate_ids:
+                continue
+            if buildings.geometry.iloc[candidate_ids].intersects(tile_box).any():
+                selected.append(
+                    (row, col, (tile_min_lon, tile_min_lat, tile_max_lon, tile_max_lat))
+                )
+
+    print(
+        f"Catastro filter: {len(buildings)} buildings -> "
+        f"{len(selected)}/{grid_x * grid_y} PNOA tiles to download"
+    )
+    if not selected:
+        raise RuntimeError(
+            "No PNOA tiles intersect Catastro buildings in the configured bbox"
+        )
+    return selected
+
+
+def iter_all_tiles(
+    grid_x: int,
+    grid_y: int,
+    area_bbox: tuple[float, float, float, float],
+) -> list[tuple[int, int, tuple[float, float, float, float]]]:
+    min_lon, min_lat, max_lon, max_lat = area_bbox
+    lon_step = (max_lon - min_lon) / grid_x
+    lat_step = (max_lat - min_lat) / grid_y
+    tiles = []
+    for row in range(grid_y):
+        for col in range(grid_x):
+            tile_min_lon = min_lon + col * lon_step
+            tile_max_lon = tile_min_lon + lon_step
+            tile_min_lat = min_lat + row * lat_step
+            tile_max_lat = tile_min_lat + lat_step
+            tiles.append(
+                (row, col, (tile_min_lon, tile_min_lat, tile_max_lon, tile_max_lat))
+            )
+    return tiles
+
+
 def download_pnoa(
     grid: int | None = None,
     size: int | None = None,
     fallback_size: int | None = None,
+    only_buildings: bool | None = None,
 ) -> None:
-    """Download PNOA imagery for the configured pilot area."""
+    """Download PNOA imagery after Catastro (by default only tiles with buildings)."""
     settings = get_pnoa_settings()
+    crop_settings = get_crop_settings()
     grid_x = grid if grid is not None else settings["grid"]
     grid_y = grid_x
     image_size = size if size is not None else settings["size"]
     fallback = (
         fallback_size if fallback_size is not None else settings["fallback_size"]
+    )
+    filter_buildings = (
+        settings["only_buildings"] if only_buildings is None else only_buildings
     )
 
     if grid_x < 1:
@@ -117,59 +230,63 @@ def download_pnoa(
     if fallback < 1:
         raise ValueError("fallback_size must be >= 1")
 
+    area_bbox = get_bbox_tuple()
+    if filter_buildings:
+        tiles = select_tiles_with_buildings(
+            grid_x,
+            grid_y,
+            area_bbox,
+            margin_meters=crop_settings["margin_meters"],
+        )
+    else:
+        tiles = iter_all_tiles(grid_x, grid_y, area_bbox)
+        print(f"Downloading full grid: {len(tiles)} PNOA tiles")
+
     clear_directory(OUTPUT_DIR)
-    min_lon, min_lat, max_lon, max_lat = get_bbox_tuple()
-    lon_step = (max_lon - min_lon) / grid_x
-    lat_step = (max_lat - min_lat) / grid_y
-    tile_id = 1
-    total_tiles = grid_x * grid_y
+    total_tiles = len(tiles)
 
     print(
-        f"PNOA download: grid={grid_x}x{grid_y}, "
-        f"size={image_size}, fallback={fallback}, tiles={total_tiles}"
+        f"PNOA download: grid={grid_x}x{grid_y}, size={image_size}, "
+        f"fallback={fallback}, only_buildings={filter_buildings}, "
+        f"tiles={total_tiles}"
     )
 
-    for row in range(grid_y):
-        for col in range(grid_x):
-            tile_min_lon = min_lon + col * lon_step
-            tile_max_lon = tile_min_lon + lon_step
-            tile_min_lat = min_lat + row * lat_step
-            tile_max_lat = tile_min_lat + lat_step
+    for tile_number, (row, col, tile_bbox) in enumerate(tiles, start=1):
+        tile_min_lon, tile_min_lat, tile_max_lon, tile_max_lat = tile_bbox
 
-            # WMS 1.3.0 + EPSG:4326 requires latitude,longitude axis order.
-            bbox = (
-                f"{tile_min_lat},{tile_min_lon},"
-                f"{tile_max_lat},{tile_max_lon}"
-            )
-            params = {
-                "SERVICE": "WMS",
-                "VERSION": "1.3.0",
-                "REQUEST": "GetMap",
-                "LAYERS": "OI.OrthoimageCoverage",
-                "CRS": "EPSG:4326",
-                "BBOX": bbox,
-                "WIDTH": image_size,
-                "HEIGHT": image_size,
-                "FORMAT": "image/png",
-                "STYLES": "",
-            }
+        # WMS 1.3.0 + EPSG:4326 requires latitude,longitude axis order.
+        bbox = (
+            f"{tile_min_lat},{tile_min_lon},"
+            f"{tile_max_lat},{tile_max_lon}"
+        )
+        params = {
+            "SERVICE": "WMS",
+            "VERSION": "1.3.0",
+            "REQUEST": "GetMap",
+            "LAYERS": "OI.OrthoimageCoverage",
+            "CRS": "EPSG:4326",
+            "BBOX": bbox,
+            "WIDTH": image_size,
+            "HEIGHT": image_size,
+            "FORMAT": "image/png",
+            "STYLES": "",
+        }
 
-            output_file = OUTPUT_DIR / f"tile_{tile_id:03d}.tif"
-            print(f"Downloading tile {tile_id:03d}/{total_tiles}")
-            image_data, image_width, image_height = _download_image(params, fallback)
+        output_file = OUTPUT_DIR / f"tile_{tile_number:03d}.tif"
+        print(
+            f"Downloading tile {tile_number:03d}/{total_tiles} "
+            f"(grid row={row}, col={col})"
+        )
+        image_data, image_width, image_height = _download_image(params, fallback)
 
-            _save_tile(
-                output_file,
-                image_data,
-                (tile_min_lon, tile_min_lat, tile_max_lon, tile_max_lat),
-                image_width,
-                image_height,
-            )
-            print(
-                f"Saved {output_file} "
-                f"({image_width}x{image_height})"
-            )
-            tile_id += 1
+        _save_tile(
+            output_file,
+            image_data,
+            (tile_min_lon, tile_min_lat, tile_max_lon, tile_max_lat),
+            image_width,
+            image_height,
+        )
+        print(f"Saved {output_file} ({image_width}x{image_height})")
 
     print(f"Finished: {total_tiles} tiles")
 
@@ -177,7 +294,11 @@ def download_pnoa(
 def main() -> None:
     defaults = get_pnoa_settings()
     parser = argparse.ArgumentParser(
-        description="Download PNOA WMS tiles for the configured pilot area"
+        description=(
+            "Download PNOA WMS tiles for the pilot area. "
+            "Run download_catastro first; by default only tiles that intersect "
+            "Catastro buildings are downloaded."
+        )
     )
     parser.add_argument(
         "--grid",
@@ -206,11 +327,21 @@ def main() -> None:
             f"(default from configs/pilot_area.yaml: {defaults['fallback_size']})"
         ),
     )
+    parser.add_argument(
+        "--only-buildings",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help=(
+            "Download only tiles intersecting Catastro buildings "
+            f"(default from config: {defaults['only_buildings']})"
+        ),
+    )
     args = parser.parse_args()
     download_pnoa(
         grid=args.grid,
         size=args.size,
         fallback_size=args.fallback_size,
+        only_buildings=args.only_buildings,
     )
 
 

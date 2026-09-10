@@ -190,9 +190,16 @@ def get_bbox_string() -> str:
 DEFAULT_PNOA_GRID = 20
 DEFAULT_PNOA_SIZE = 4096
 DEFAULT_PNOA_FALLBACK_SIZE = 2048
+DEFAULT_PNOA_ONLY_BUILDINGS = True
 DEFAULT_CROP_MODE = "rectangle"
 DEFAULT_CROP_MARGIN_METERS = 10.0
 DEFAULT_YOLO_OFFSET_METERS = 10.0
+DEFAULT_CATASTRO_ONLY_FUNCTIONAL = True
+DEFAULT_CATASTRO_MIN_AREA_M2 = 50.0
+DEFAULT_CATASTRO_MIN_DWELLINGS = 0
+DEFAULT_CATASTRO_CURRENT_USE: list[str] = []
+DEFAULT_CATASTRO_EXCLUDE_CURRENT_USE: list[str] = []
+DEFAULT_CATASTRO_REFERENCES: list[str] = []
 
 
 def get_pnoa_settings() -> dict:
@@ -203,6 +210,7 @@ def get_pnoa_settings() -> dict:
         grid (int): number of tiles along X and Y
         size (int): WMS request width/height in pixels
         fallback_size (int): smaller size used after WMS failures
+        only_buildings (bool): download only tiles intersecting Catastro
     """
 
     config = load_pilot_area() or {}
@@ -211,6 +219,7 @@ def get_pnoa_settings() -> dict:
     grid = int(pnoa.get("grid", DEFAULT_PNOA_GRID))
     size = int(pnoa.get("size", DEFAULT_PNOA_SIZE))
     fallback_size = int(pnoa.get("fallback_size", DEFAULT_PNOA_FALLBACK_SIZE))
+    only_buildings = bool(pnoa.get("only_buildings", DEFAULT_PNOA_ONLY_BUILDINGS))
 
     if grid < 1:
         raise ValueError("pnoa.grid must be >= 1")
@@ -223,6 +232,7 @@ def get_pnoa_settings() -> dict:
         "grid": grid,
         "size": size,
         "fallback_size": fallback_size,
+        "only_buildings": only_buildings,
     }
 
 
@@ -239,6 +249,37 @@ def get_crop_settings() -> dict:
     return {
         "mode": mode,
         "margin_meters": margin_meters,
+    }
+
+
+def get_catastro_settings() -> dict:
+    """Return Catastro selection filters from pilot_area.yaml."""
+    config = load_pilot_area() or {}
+    catastro = config.get("catastro") or {}
+
+    only_functional = bool(
+        catastro.get("only_functional", DEFAULT_CATASTRO_ONLY_FUNCTIONAL)
+    )
+    min_area_m2 = float(catastro.get("min_area_m2", DEFAULT_CATASTRO_MIN_AREA_M2))
+    min_dwellings = int(catastro.get("min_dwellings", DEFAULT_CATASTRO_MIN_DWELLINGS))
+    current_use = list(catastro.get("current_use", DEFAULT_CATASTRO_CURRENT_USE) or [])
+    exclude_current_use = list(
+        catastro.get("exclude_current_use", DEFAULT_CATASTRO_EXCLUDE_CURRENT_USE) or []
+    )
+    references = list(catastro.get("references", DEFAULT_CATASTRO_REFERENCES) or [])
+
+    if min_area_m2 < 0:
+        raise ValueError("catastro.min_area_m2 must be non-negative")
+    if min_dwellings < 0:
+        raise ValueError("catastro.min_dwellings must be non-negative")
+
+    return {
+        "only_functional": only_functional,
+        "min_area_m2": min_area_m2,
+        "min_dwellings": min_dwellings,
+        "current_use": [str(value) for value in current_use],
+        "exclude_current_use": [str(value) for value in exclude_current_use],
+        "references": [str(value) for value in references],
     }
 
 

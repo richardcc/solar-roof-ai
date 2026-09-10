@@ -8,12 +8,25 @@ bbox:
   max_lon: -3.82
   max_lat: 40.45
 
+# Selection filters applied after Catastro download and before PNOA/crops.
+# current_use / exclude_current_use: INSPIRE codes (e.g. 1_residential).
+# Empty current_use = allow any use.
+catastro:
+  only_functional: true
+  min_area_m2: 80
+  min_dwellings: 1
+  current_use: ["1_residential"]
+  exclude_current_use: []
+  references: []
+
 # PNOA WMS download. Higher grid = smaller tiles = finer GSD.
-# grid 20 + size 4096 ≈ 0.10–0.12 m/px on this bbox (better for YOLO roof crops).
+# Run download_catastro BEFORE download_pnoa.
+# only_buildings: true downloads only tiles that intersect filtered Catastro buildings.
 pnoa:
   grid: 20
   size: 4096
   fallback_size: 2048
+  only_buildings: true
 
 # Building crops / YOLO dataset defaults
 crop:

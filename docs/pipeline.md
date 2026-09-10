@@ -12,12 +12,13 @@ Zona piloto por defecto: **Boadilla del Monte (Madrid)**, definida en `configs/p
 configs/pilot_area.yaml
         |
         v
-[1] download_pnoa          --> data/raw/pnoa/tiles/
-[2] download_catastro      --> data/raw/catastro/tiles/ + buildings.*
-[3] crop_buildings         --> data/raw/catastro/building_crops/
+[1] download_catastro      --> data/raw/catastro/tiles/ + buildings.*
+[2] download_pnoa          --> data/raw/pnoa/tiles/  (solo celdas con edificios)
+[3] crop_buildings         --> data/raw/catastro/building_crops/ + index.geojson
 [4] prepare_yolo_dataset   --> data/processed/yolo/train/{images,labels} + data.yml
-
 ```
+
+Orden: **Catastro primero**, luego PNOA filtrado a teselas que intersectan edificios (`pnoa.only_buildings: true`).
 
 Cada paso **borra su carpeta de salida** al empezar (`src/common/fs.py`), para no mezclar resultados antiguos con nuevos.
 
@@ -57,7 +58,8 @@ cd C:\Users\ricardo.alba\Projects\solar-roof-ai
 |---------|-----|
 | `pilot_area` | Municipio / provincia (documentación) |
 | `bbox` | Área geográfica de descarga (lon/lat WGS84) |
-| `pnoa` | Parámetros WMS: `grid`, `size`, `fallback_size` |
+| `catastro` | Filtros de selección de edificios |
+| `pnoa` | Parámetros WMS: `grid`, `size`, `fallback_size`, `only_buildings` |
 
 Ejemplo:
 
@@ -68,10 +70,19 @@ bbox:
   max_lon: -3.82
   max_lat: 40.45
 
+catastro:
+  only_functional: true
+  min_area_m2: 50
+  min_dwellings: 0
+  current_use: []              # vacío = todos; ej. ["1_residential"]
+  exclude_current_use: []
+  references: []               # lista blanca de RC
+
 pnoa:
-  grid: 20          # teselas en X e Y (20 => 400 tiles)
+  grid: 20          # teselas en X e Y (20 => 400 celdas posibles)
   size: 4096        # píxeles por tesela WMS
   fallback_size: 2048
+  only_buildings: true   # solo descarga celdas con edificios Catastro
 
 crop:
   mode: rectangle
@@ -89,33 +100,7 @@ Prioridad de parámetros PNOA: **CLI > YAML > defaults internos**.
 
 ---
 
-## Paso 1 — Descargar ortofotos PNOA
-
-**Módulo:** `src/data/download_pnoa.py`  
-**Salida:** `data/raw/pnoa/tiles/tile_XXX.tif`
-
-Descarga ortofotos del WMS PNOA Máxima Actualidad (IGN) en una rejilla sobre el bbox.
-
-```powershell
-# Usa grid/size del YAML
-python -m src.data.download_pnoa
-
-# O fuerza por CLI
-python -m src.data.download_pnoa --grid 20 --size 4096
-python -m src.data.download_pnoa --grid 20 --size 4096 --fallback-size 2048
-```
-
-| Parámetro | Descripción |
-|-----------|-------------|
-| `--grid` | Número de teselas en X e Y |
-| `--size` | Ancho/alto WMS en píxeles |
-| `--fallback-size` | Tamaño si el WMS falla con `size` |
-
-Al iniciar **limpia** `data/raw/pnoa/tiles/`.
-
----
-
-## Paso 2 — Descargar edificios Catastro
+## Paso 1 — Descargar edificios Catastro
 
 **Módulo:** `src/data/download_catastro.py`  
 **Salida:**
@@ -124,13 +109,43 @@ Al iniciar **limpia** `data/raw/pnoa/tiles/`.
 - `data/raw/catastro/buildings.gml`
 - `data/raw/catastro/buildings.geojson`
 
-Consulta el WFS INSPIRE de Catastro (`bu:Building`) en teselas de 1 km (EPSG:25830).
+Consulta el WFS INSPIRE de Catastro (`bu:Building`) en teselas de 1 km (EPSG:25830).  
+Al final aplica los filtros de `configs/pilot_area.yaml` → `catastro` y guarda solo los edificios seleccionados en `buildings.geojson`.
 
 ```powershell
 python -m src.data.download_catastro
 ```
 
 Al iniciar **limpia** `data/raw/catastro/tiles/` y borra `buildings.gml` / `buildings.geojson` previos.
+
+---
+
+## Paso 2 — Descargar ortofotos PNOA
+
+**Módulo:** `src/data/download_pnoa.py`  
+**Requisito:** Catastro ya descargado (`buildings.geojson` o tiles).  
+**Salida:** `data/raw/pnoa/tiles/tile_XXX.tif`
+
+Descarga ortofotos del WMS PNOA Máxima Actualidad (IGN). Por defecto solo las celdas de la rejilla que **intersectan edificios** Catastro (`only_buildings: true`), con buffer = `crop.margin_meters`.
+
+```powershell
+# Usa grid/size/only_buildings del YAML (requiere Catastro previo)
+python -m src.data.download_pnoa
+
+# Forzar parámetros
+python -m src.data.download_pnoa --grid 20 --size 4096
+python -m src.data.download_pnoa --all-buildings   # alias: ver --only-buildings
+python -m src.data.download_pnoa --no-only-buildings   # bbox completa
+```
+
+| Parámetro | Descripción |
+|-----------|-------------|
+| `--grid` | Número de celdas en X e Y |
+| `--size` | Ancho/alto WMS en píxeles |
+| `--fallback-size` | Tamaño si el WMS falla con `size` |
+| `--only-buildings` / `--no-only-buildings` | Filtrar por Catastro (default YAML) |
+
+Al iniciar **limpia** `data/raw/pnoa/tiles/`.
 
 ---
 
@@ -207,17 +222,17 @@ Este paso **no aumenta la resolución real** de la imagen: solo recorta. Si el G
 ## Ejecución completa (orden recomendado)
 
 ```powershell
-# 1. Ortofotos (ajusta grid/size en YAML o CLI)
-python -m src.data.download_pnoa --grid 20 --size 4096
-
-# 2. Catastro
+# 1. Catastro (aplica filtros de pilot_area.yaml)
 python -m src.data.download_catastro
 
-# 3. Crops
-python -m src.data.crop_buildings --crop-mode rectangle --margin-meters 10
+# 2. PNOA solo sobre celdas con esos edificios
+python -m src.data.download_pnoa
 
-# 4. Dataset YOLO
-python -m src.data.prepare_yolo_dataset --offset-meters 10
+# 3. Crops + index.geojson
+python -m src.data.crop_buildings
+
+# 4. Dataset YOLO (opcional)
+python -m src.data.prepare_yolo_dataset
 ```
 
 ---

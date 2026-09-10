@@ -14,6 +14,7 @@ from shapely.geometry import box, mapping
 
 from src.common.config import CATASTRO_DIR, PNOA_DIR, get_crop_settings, load_pilot_area
 from src.common.fs import clear_directory
+from src.data.catastro_filter import filter_buildings
 
 DEFAULT_BUILDINGS_DIR = CATASTRO_DIR / "tiles"
 DEFAULT_TILES_DIR = PNOA_DIR / "tiles"
@@ -122,6 +123,12 @@ def load_buildings(buildings_dir: str | Path = DEFAULT_BUILDINGS_DIR) -> gpd.Geo
         buildings = buildings.drop(columns="_building_key")
 
     buildings = buildings[buildings.geometry.notna() & ~buildings.geometry.is_empty].copy()
+    buildings = filter_buildings(buildings)
+    if buildings.empty:
+        raise RuntimeError(
+            "No buildings left after Catastro filter. "
+            "Relax catastro.* in configs/pilot_area.yaml"
+        )
     buildings = buildings.reset_index(drop=True)
     buildings["_crop_id"] = range(1, len(buildings) + 1)
     return buildings

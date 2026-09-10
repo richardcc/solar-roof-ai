@@ -9,6 +9,7 @@ from owslib.wfs import WebFeatureService
 from src.common.config import CATASTRO_DIR, get_bbox_tuple
 from src.common.fs import clear_directory
 from src.common.logger import get_logger
+from src.data.catastro_filter import filter_buildings
 
 logger = get_logger(__name__)
 
@@ -171,6 +172,14 @@ def download_catastro(
         pd.concat(tile_frames, ignore_index=True),
         crs=tile_frames[0].crs,
     )
+    raw_count = len(gdf)
+    gdf = filter_buildings(gdf)
+    if gdf.empty:
+        raise RuntimeError(
+            "Catastro filter removed all buildings. "
+            "Relax catastro.* settings in configs/pilot_area.yaml"
+        )
+    logger.info("Catastro buildings after filter: %s / %s", len(gdf), raw_count)
 
     output_file = CATASTRO_DIR / "buildings.gml"
 
