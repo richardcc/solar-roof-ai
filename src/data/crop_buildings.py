@@ -10,7 +10,7 @@ import rasterio
 from rasterio.features import geometry_window, rasterize
 from shapely.geometry import box
 
-from src.common.config import CATASTRO_DIR, PNOA_DIR
+from src.common.config import CATASTRO_DIR, PNOA_DIR, get_crop_settings
 from src.common.fs import clear_directory
 
 DEFAULT_BUILDINGS_DIR = CATASTRO_DIR / "tiles"
@@ -66,8 +66,11 @@ def crop_buildings(
     output_dir: str | Path,
     margin_meters: float = 10,
     crop_mode: str = "rectangle",
-) -> int:
-    """Crop one image per building using a rectangle or the building shape."""
+) -> set[int]:
+    """Crop one image per building using a rectangle or the building shape.
+
+    Returns the set of ``_crop_id`` values successfully written from this tile.
+    """
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -79,11 +82,11 @@ def crop_buildings(
         raise ValueError("crop_mode must be 'rectangle' or 'shape'")
 
     buildings_metric = buildings_gdf.to_crs(METRIC_CRS)
+    saved_ids: set[int] = set()
     with rasterio.open(tile_path) as source:
         buildings = buildings_metric.to_crs(source.crs)
         tile_geometry = box(*source.bounds)
         buildings = buildings[buildings.geometry.intersects(tile_geometry)]
-        saved = 0
 
         for fallback_index, row in buildings.iterrows():
             geometry_metric = buildings_metric.loc[row.name].geometry
@@ -148,10 +151,10 @@ def crop_buildings(
                 crs=source.crs,
             )
             geometry_frame.to_file(geometry_file, driver="GeoJSON")
-            saved += 1
+            saved_ids.add(crop_id)
             print(f"Saved {output_file} and {geometry_file}")
 
-    return saved
+    return saved_ids
 
 
 def crop_all_buildings(
@@ -167,35 +170,50 @@ def crop_all_buildings(
     if not tile_paths:
         raise FileNotFoundError(f"No GeoTIFF tiles found in {tiles_dir}")
 
+    print(f"Loaded {len(buildings)} Catastro buildings, {len(tile_paths)} PNOA tiles")
     output_dir = clear_directory(output_dir)
     processed_ids: set[int] = set()
     total_saved = 0
     for tile_path in tile_paths:
-        tile_buildings = buildings[~buildings["_crop_id"].isin(processed_ids)]
-        saved = crop_buildings(
+        pending = buildings[~buildings["_crop_id"].isin(processed_ids)]
+        if pending.empty:
+            break
+        saved_ids = crop_buildings(
             tile_path,
-            tile_buildings,
+            pending,
             output_dir,
             margin_meters,
             crop_mode,
         )
-        total_saved += saved
-        processed_ids.update(tile_buildings["_crop_id"].astype(int))
+        total_saved += len(saved_ids)
+        processed_ids.update(saved_ids)
 
+    pending_count = len(buildings) - len(processed_ids)
+    if pending_count:
+        print(
+            f"Warning: {pending_count} buildings were not cropped "
+            "(outside PNOA tiles or failed window)"
+        )
     print(f"Finished: {total_saved} building crops")
     return total_saved
 
 
 def main() -> None:
+    defaults = get_crop_settings()
     parser = argparse.ArgumentParser(description="Create one GeoTIFF crop per Catastro building")
     parser.add_argument("--buildings-dir", type=Path, default=DEFAULT_BUILDINGS_DIR)
     parser.add_argument("--tiles-dir", type=Path, default=DEFAULT_TILES_DIR)
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
-    parser.add_argument("--margin-meters", type=float, default=10)
+    parser.add_argument(
+        "--margin-meters",
+        type=float,
+        default=defaults["margin_meters"],
+        help=f"Buffer around building (default from config: {defaults['margin_meters']})",
+    )
     parser.add_argument(
         "--crop-mode",
         choices=("rectangle", "shape"),
-        default="rectangle",
+        default=defaults["mode"],
         help="rectangle keeps context around the building; shape masks outside it",
     )
     args = parser.parse_args()

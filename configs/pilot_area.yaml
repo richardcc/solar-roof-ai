@@ -9,8 +9,16 @@ bbox:
   max_lat: 40.45
 
 # PNOA WMS download. Higher grid = smaller tiles = finer GSD.
-# Example: grid 10 + size 4096 ≈ 0.20–0.25 m/px on this bbox.
+# grid 20 + size 4096 ≈ 0.10–0.12 m/px on this bbox (better for YOLO roof crops).
 pnoa:
-  grid: 10
+  grid: 20
   size: 4096
   fallback_size: 2048
+
+# Building crops / YOLO dataset defaults
+crop:
+  mode: rectangle
+  margin_meters: 10
+
+yolo:
+  offset_meters: 10

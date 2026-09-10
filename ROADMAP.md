@@ -1,5 +1,10 @@
 # Solar Roof AI - Roadmap del Proyecto
 
+> **Visión actual del proyecto (fases actualizadas):**  
+> ver [`docs/proyecto.md`](docs/proyecto.md) — enfoque **Catastro → cubierta → LiDAR → PVGIS** (YOLO opcional).
+>
+> El resto de este fichero es el roadmap histórico inicial (más centrado en detección YOLO).
+
 ## Descripción
 
 Sistema basado en Inteligencia Artificial y Sistemas de Información Geográfica (SIG) para la detección automática de tejados y evaluación de su potencial fotovoltaico utilizando:

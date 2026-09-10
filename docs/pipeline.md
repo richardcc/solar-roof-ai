@@ -15,7 +15,8 @@ configs/pilot_area.yaml
 [1] download_pnoa          --> data/raw/pnoa/tiles/
 [2] download_catastro      --> data/raw/catastro/tiles/ + buildings.*
 [3] crop_buildings         --> data/raw/catastro/building_crops/
-[4] prepare_yolo_dataset   --> data/processed/yolo/images|labels/
+[4] prepare_yolo_dataset   --> data/processed/yolo/train/{images,labels} + data.yml
+
 ```
 
 Cada paso **borra su carpeta de salida** al empezar (`src/common/fs.py`), para no mezclar resultados antiguos con nuevos.
@@ -68,14 +69,21 @@ bbox:
   max_lat: 40.45
 
 pnoa:
-  grid: 10          # teselas en X e Y (10 => 100 tiles)
+  grid: 20          # teselas en X e Y (20 => 400 tiles)
   size: 4096        # píxeles por tesela WMS
   fallback_size: 2048
+
+crop:
+  mode: rectangle
+  margin_meters: 10
+
+yolo:
+  offset_meters: 10
 ```
 
 **Resolución (GSD):** a mayor `grid` (misma `size`), cada tesela cubre menos terreno y la resolución por metro mejora.  
-Con `grid: 10` y `size: 4096` en esta bbox ≈ **0,20–0,25 m/px**.  
-Con `grid: 5` ≈ **0,4–0,5 m/px** (suele ser insuficiente para YOLO en tejados pequeños).
+Con `grid: 20` y `size: 4096` en esta bbox ≈ **0,10–0,12 m/px** (recomendado para YOLO).  
+Con `grid: 10` ≈ **0,20–0,25 m/px** (crops de tejado suelen quedar demasiado pequeños).
 
 Prioridad de parámetros PNOA: **CLI > YAML > defaults internos**.
 
@@ -93,7 +101,7 @@ Descarga ortofotos del WMS PNOA Máxima Actualidad (IGN) en una rejilla sobre el
 python -m src.data.download_pnoa
 
 # O fuerza por CLI
-python -m src.data.download_pnoa --grid 10 --size 4096
+python -m src.data.download_pnoa --grid 20 --size 4096
 python -m src.data.download_pnoa --grid 20 --size 4096 --fallback-size 2048
 ```
 
@@ -162,13 +170,25 @@ Al iniciar **limpia** la carpeta de salida.
 **Entrada:** crops + GeoJSON catastral por edificio  
 **Salida:**
 
-- `data/processed/yolo/images/building_XXXXXX.tif`
-- `data/processed/yolo/labels/building_XXXXXX.txt` (segmentación, clase `0` = roof)
+```text
+data/processed/yolo/
+  data.yml
+  train/
+    images/building_XXXXXX.tif
+    labels/building_XXXXXX.txt   # segmentación, clase 0 = roof
+```
 
-Crea recortes cuadrados centrados en el edificio (con offset métrico) y escribe labels YOLO-seg a partir del **polígono Catastro**.
+Crea el split `train` (imágenes + labels) y genera `data.yml` listo para Ultralytics YOLO-seg.  
+Las labels usan el **polígono Catastro**. Por ahora `val` apunta al mismo `train/images` (hasta tener split de validación).
 
 ```powershell
 python -m src.data.prepare_yolo_dataset --offset-meters 10
+```
+
+Entrenamiento típico:
+
+```powershell
+yolo segment train data=data/processed/yolo/data.yml model=yolo11n-seg.pt
 ```
 
 | Parámetro | Descripción |
@@ -187,7 +207,7 @@ Este paso **no aumenta la resolución real** de la imagen: solo recorta. Si el G
 
 ```powershell
 # 1. Ortofotos (ajusta grid/size en YAML o CLI)
-python -m src.data.download_pnoa --grid 10 --size 4096
+python -m src.data.download_pnoa --grid 20 --size 4096
 
 # 2. Catastro
 python -m src.data.download_catastro
@@ -215,8 +235,10 @@ data/
       building_crops/        # un crop por edificio
   processed/
     yolo/
-      images/
-      labels/
+      data.yml
+      train/
+        images/
+        labels/
 ```
 
 ---
@@ -251,7 +273,7 @@ Según el roadmap del proyecto, quedan pendientes:
 
 | Problema | Qué revisar |
 |----------|-------------|
-| Crops muy pequeños / YOLO no aprende | Sube `pnoa.grid` (p. ej. 10 o 20), redescarga PNOA y repite crops → YOLO |
+| Crops muy pequeños / YOLO no aprende | Sube `pnoa.grid` (p. ej. 20+), redescarga PNOA y repite crops → YOLO |
 | `torch==...+cu128` no instala | Usa el índice CUDA de PyTorch (ver README / notas de instalación) |
 | WMS falla en algunas teselas | El script reintenta y usa `fallback_size` |
 | Carpeta con datos viejos | Cada paso limpia su salida; no hace falta borrar a mano |

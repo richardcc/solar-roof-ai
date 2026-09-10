@@ -187,9 +187,12 @@ def get_bbox_string() -> str:
     return f"{min_x},{min_y},{max_x},{max_y}"
 
 
-DEFAULT_PNOA_GRID = 5
+DEFAULT_PNOA_GRID = 20
 DEFAULT_PNOA_SIZE = 4096
 DEFAULT_PNOA_FALLBACK_SIZE = 2048
+DEFAULT_CROP_MODE = "rectangle"
+DEFAULT_CROP_MARGIN_METERS = 10.0
+DEFAULT_YOLO_OFFSET_METERS = 10.0
 
 
 def get_pnoa_settings() -> dict:
@@ -220,4 +223,32 @@ def get_pnoa_settings() -> dict:
         "grid": grid,
         "size": size,
         "fallback_size": fallback_size,
+    }
+
+
+def get_crop_settings() -> dict:
+    """Return building-crop defaults from pilot_area.yaml."""
+    config = load_pilot_area() or {}
+    crop = config.get("crop") or {}
+    mode = str(crop.get("mode", DEFAULT_CROP_MODE)).lower()
+    margin_meters = float(crop.get("margin_meters", DEFAULT_CROP_MARGIN_METERS))
+    if mode not in {"rectangle", "shape"}:
+        raise ValueError("crop.mode must be 'rectangle' or 'shape'")
+    if margin_meters < 0:
+        raise ValueError("crop.margin_meters must be non-negative")
+    return {
+        "mode": mode,
+        "margin_meters": margin_meters,
+    }
+
+
+def get_yolo_dataset_settings() -> dict:
+    """Return YOLO dataset preparation defaults from pilot_area.yaml."""
+    config = load_pilot_area() or {}
+    yolo = config.get("yolo") or {}
+    offset_meters = float(yolo.get("offset_meters", DEFAULT_YOLO_OFFSET_METERS))
+    if offset_meters < 0:
+        raise ValueError("yolo.offset_meters must be non-negative")
+    return {
+        "offset_meters": offset_meters,
     }
