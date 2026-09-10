@@ -7,9 +7,12 @@ import re
 from pathlib import Path
 
 import geopandas as gpd
+import numpy as np
 import pandas as pd
 import rasterio
-from rasterio.features import geometry_window, rasterize
+from rasterio.features import rasterize
+from rasterio.merge import merge
+from rasterio.transform import array_bounds
 from shapely.geometry import box, mapping
 
 from src.common.config import CATASTRO_DIR, PNOA_DIR, get_crop_settings, load_pilot_area
@@ -96,17 +99,23 @@ def _catastro_properties(row: pd.Series) -> dict:
 
 
 def load_buildings(buildings_dir: str | Path = DEFAULT_BUILDINGS_DIR) -> gpd.GeoDataFrame:
-    """Load and deduplicate Catastro building GeoJSON files."""
+    """Load and deduplicate Catastro buildings (prefers buildings.geojson)."""
     buildings_dir = Path(buildings_dir)
-    files = sorted(buildings_dir.glob("buildings_*.geojson"))
-    if not files:
-        raise FileNotFoundError(f"No building GeoJSON files found in {buildings_dir}")
+    master = CATASTRO_DIR / "buildings.geojson"
+    if master.exists():
+        buildings = gpd.read_file(master)
+    else:
+        files = sorted(buildings_dir.glob("buildings_*.geojson"))
+        if not files:
+            raise FileNotFoundError(
+                f"No building GeoJSON found in {master} or {buildings_dir}"
+            )
+        frames = [gpd.read_file(path) for path in files]
+        buildings = gpd.GeoDataFrame(
+            pd.concat(frames, ignore_index=True),
+            crs=frames[0].crs,
+        )
 
-    frames = [gpd.read_file(path) for path in files]
-    buildings = gpd.GeoDataFrame(
-        pd.concat(frames, ignore_index=True),
-        crs=frames[0].crs,
-    )
     if buildings.crs is None:
         raise ValueError("Building data has no CRS")
 
@@ -144,6 +153,7 @@ def _build_record(
     crop_mode: str,
     output_dir: Path,
     pilot: dict,
+    source_tiles: list[str],
 ) -> dict:
     geometry_wgs84 = (
         gpd.GeoSeries([building_geometry], crs=source_crs)
@@ -158,6 +168,8 @@ def _build_record(
         "source_id": _json_safe(row.get("_building_id", "")),
         "margin_meters": margin_meters,
         "crop_mode": crop_mode,
+        "source_tiles": ",".join(source_tiles),
+        "source_tile_count": len(source_tiles),
         "crop_tif": f"{building_id}.tif",
         "crop_geojson": f"{building_id}.geojson",
         "crop_tif_path": str((output_dir / f"{building_id}.tif").resolve()),
@@ -199,113 +211,157 @@ def write_building_index(features: list[dict], output_dir: Path) -> Path:
     return index_path
 
 
-def crop_buildings(
-    tile_path: str | Path,
-    buildings_gdf: gpd.GeoDataFrame,
-    output_dir: str | Path,
-    margin_meters: float = 10,
-    crop_mode: str = "rectangle",
-    pilot: dict | None = None,
-) -> tuple[set[int], list[dict]]:
-    """Crop one image per building using a rectangle or the building shape.
-
-    Returns saved ``_crop_id`` values and GeoJSON features for the building index.
-    """
-    output_dir = Path(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    pilot = pilot or _pilot_metadata()
-
-    if buildings_gdf.crs is None:
-        raise ValueError("Building data has no CRS")
-    if margin_meters < 0:
-        raise ValueError("margin_meters must be non-negative")
-    if crop_mode not in {"rectangle", "shape"}:
-        raise ValueError("crop_mode must be 'rectangle' or 'shape'")
-
-    buildings_metric = buildings_gdf.to_crs(METRIC_CRS)
-    saved_ids: set[int] = set()
-    features: list[dict] = []
-
-    with rasterio.open(tile_path) as source:
-        buildings = buildings_metric.to_crs(source.crs)
-        tile_geometry = box(*source.bounds)
-        buildings = buildings[buildings.geometry.intersects(tile_geometry)]
-
-        for fallback_index, row in buildings.iterrows():
-            geometry_metric = buildings_metric.loc[row.name].geometry
-            buffered_geometry = geometry_metric.buffer(margin_meters)
-            buffered_geometry = gpd.GeoSeries(
-                [buffered_geometry], crs=METRIC_CRS
-            ).to_crs(source.crs).iloc[0]
-            building_geometry = row.geometry
-
-            crop_geometry = (
-                buffered_geometry if crop_mode == "rectangle" else building_geometry
-            ).intersection(tile_geometry)
-            if crop_geometry.is_empty or building_geometry.is_empty:
-                continue
-
-            try:
-                window = geometry_window(
-                    source,
-                    [crop_geometry],
-                )
-                cropped_image = source.read(window=window)
-                cropped_transform = source.window_transform(window)
-            except (ValueError, rasterio.errors.WindowError):
-                continue
-
-            profile = source.profile.copy()
-            profile.update(
-                height=cropped_image.shape[1],
-                width=cropped_image.shape[2],
-                transform=cropped_transform,
-                compress="deflate",
+def _load_tile_index(tile_paths: list[Path]) -> gpd.GeoDataFrame:
+    """Spatial index of PNOA tile footprints."""
+    records = []
+    for path in tile_paths:
+        with rasterio.open(path) as source:
+            records.append(
+                {
+                    "path": str(path),
+                    "name": path.name,
+                    "crs": source.crs.to_string() if source.crs else None,
+                    "geometry": box(*source.bounds),
+                }
             )
+    if not records:
+        raise FileNotFoundError("No readable PNOA tiles")
+    tile_index = gpd.GeoDataFrame(records, crs=records[0]["crs"])
+    if tile_index.crs is None:
+        raise ValueError("PNOA tiles have no CRS")
+    return tile_index
 
-            if crop_mode == "shape":
-                shape_mask = rasterize(
-                    [(crop_geometry, 1)],
-                    out_shape=(cropped_image.shape[1], cropped_image.shape[2]),
-                    transform=cropped_transform,
-                    fill=0,
-                    dtype="uint8",
-                ).astype(bool)
-                cropped_image[:, ~shape_mask] = 0
-                profile.update(nodata=0)
 
-            crop_id = int(row.get("_crop_id", fallback_index + 1))
-            building_id = f"building_{crop_id:06d}"
-            output_file = output_dir / f"{building_id}.tif"
-            with rasterio.open(output_file, "w", **profile) as destination:
-                destination.write(cropped_image)
+def _mosaic_crop(
+    tile_paths: list[Path],
+    crop_geometry,
+    nodata: int = 0,
+) -> tuple[np.ndarray, rasterio.Affine, dict]:
+    """Merge one or more PNOA tiles covering the full crop geometry bounds."""
+    datasets = [rasterio.open(path) for path in tile_paths]
+    try:
+        mosaic, transform = merge(
+            datasets,
+            bounds=tuple(crop_geometry.bounds),
+            nodata=nodata,
+        )
+        profile = datasets[0].profile.copy()
+        profile.update(
+            height=mosaic.shape[1],
+            width=mosaic.shape[2],
+            transform=transform,
+            compress="deflate",
+            nodata=nodata,
+        )
+        return mosaic, transform, profile
+    finally:
+        for dataset in datasets:
+            dataset.close()
 
-            feature = _build_record(
-                row=row,
-                building_id=building_id,
-                crop_id=crop_id,
-                building_geometry=building_geometry,
-                source_crs=source.crs,
-                margin_meters=margin_meters,
-                crop_mode=crop_mode,
-                output_dir=output_dir,
-                pilot=pilot,
-            )
-            geometry_file = output_dir / f"{building_id}.geojson"
-            geometry_file.write_text(
-                json.dumps(
-                    {"type": "FeatureCollection", "features": [feature]},
-                    ensure_ascii=False,
-                    indent=2,
-                ),
-                encoding="utf-8",
-            )
-            features.append(feature)
-            saved_ids.add(crop_id)
-            reference = feature["properties"].get("reference") or building_id
-            print(f"Saved {output_file} ({reference})")
 
-    return saved_ids, features
+def crop_one_building(
+    row: pd.Series,
+    geometry_metric,
+    tile_index: gpd.GeoDataFrame,
+    output_dir: Path,
+    margin_meters: float,
+    crop_mode: str,
+    pilot: dict,
+) -> dict | None:
+    """Crop the full building footprint, mosaicking tiles when it crosses edges."""
+    if geometry_metric is None or geometry_metric.is_empty:
+        return None
+
+    buffered_metric = geometry_metric.buffer(margin_meters)
+    crop_metric = buffered_metric if crop_mode == "rectangle" else geometry_metric
+    if crop_metric.is_empty:
+        return None
+
+    crop_geom = (
+        gpd.GeoSeries([crop_metric], crs=METRIC_CRS)
+        .to_crs(tile_index.crs)
+        .iloc[0]
+    )
+    building_geom = (
+        gpd.GeoSeries([geometry_metric], crs=METRIC_CRS)
+        .to_crs(tile_index.crs)
+        .iloc[0]
+    )
+
+    hits = tile_index[tile_index.intersects(crop_geom)].copy()
+    if hits.empty:
+        return None
+
+    # Prefer a single tile that fully contains the crop; else mosaic all hits.
+    fully_containing = hits[hits.contains(crop_geom)]
+    if not fully_containing.empty:
+        # Choose the tile with largest overlap area as tie-breaker.
+        overlap = fully_containing.intersection(crop_geom).area
+        selected = fully_containing.loc[[overlap.idxmax()]]
+    else:
+        selected = hits
+
+    tile_paths = [Path(path) for path in selected["path"].tolist()]
+    try:
+        mosaic, transform, profile = _mosaic_crop(tile_paths, crop_geom)
+    except (ValueError, rasterio.errors.RasterioIOError, rasterio.errors.WindowError):
+        return None
+
+    if mosaic.size == 0 or mosaic.shape[1] == 0 or mosaic.shape[2] == 0:
+        return None
+
+    # Ensure mosaic covers crop bounds; trim nodata-only borders is optional.
+    left, bottom, right, top = array_bounds(mosaic.shape[1], mosaic.shape[2], transform)
+    mosaic_box = box(left, bottom, right, top)
+    if not mosaic_box.intersects(crop_geom):
+        return None
+
+    if crop_mode == "shape":
+        shape_mask = rasterize(
+            [(building_geom, 1)],
+            out_shape=(mosaic.shape[1], mosaic.shape[2]),
+            transform=transform,
+            fill=0,
+            dtype="uint8",
+        ).astype(bool)
+        mosaic[:, ~shape_mask] = 0
+        profile.update(nodata=0)
+
+    crop_id = int(row["_crop_id"])
+    building_id = f"building_{crop_id:06d}"
+    output_file = output_dir / f"{building_id}.tif"
+    with rasterio.open(output_file, "w", **profile) as destination:
+        destination.write(mosaic)
+
+    feature = _build_record(
+        row=row,
+        building_id=building_id,
+        crop_id=crop_id,
+        building_geometry=building_geom,
+        source_crs=tile_index.crs,
+        margin_meters=margin_meters,
+        crop_mode=crop_mode,
+        output_dir=output_dir,
+        pilot=pilot,
+        source_tiles=[path.name for path in tile_paths],
+    )
+    geometry_file = output_dir / f"{building_id}.geojson"
+    geometry_file.write_text(
+        json.dumps(
+            {"type": "FeatureCollection", "features": [feature]},
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    reference = feature["properties"].get("reference") or building_id
+    tile_note = (
+        tile_paths[0].name
+        if len(tile_paths) == 1
+        else f"mosaic:{len(tile_paths)} tiles"
+    )
+    print(f"Saved {output_file} ({reference}, {tile_note})")
+    return feature
 
 
 def crop_all_buildings(
@@ -315,7 +371,12 @@ def crop_all_buildings(
     margin_meters: float = 10,
     crop_mode: str = "rectangle",
 ) -> int:
-    """Load all Catastro buildings and crop them from all PNOA tiles."""
+    """Crop each building fully (single tile or mosaic across tile edges)."""
+    if margin_meters < 0:
+        raise ValueError("margin_meters must be non-negative")
+    if crop_mode not in {"rectangle", "shape"}:
+        raise ValueError("crop_mode must be 'rectangle' or 'shape'")
+
     buildings = load_buildings(buildings_dir)
     tile_paths = sorted(Path(tiles_dir).glob("*.tif"))
     if not tile_paths:
@@ -324,44 +385,41 @@ def crop_all_buildings(
     print(f"Loaded {len(buildings)} Catastro buildings, {len(tile_paths)} PNOA tiles")
     output_dir = clear_directory(output_dir)
     pilot = _pilot_metadata()
-    processed_ids: set[int] = set()
-    index_features: list[dict] = []
-    total_saved = 0
+    tile_index = _load_tile_index(tile_paths)
+    buildings_metric = buildings.to_crs(METRIC_CRS)
 
-    for tile_path in tile_paths:
-        pending = buildings[~buildings["_crop_id"].isin(processed_ids)]
-        if pending.empty:
-            break
-        saved_ids, features = crop_buildings(
-            tile_path,
-            pending,
-            output_dir,
-            margin_meters,
-            crop_mode,
+    index_features: list[dict] = []
+    for index, row in buildings.iterrows():
+        feature = crop_one_building(
+            row=row,
+            geometry_metric=buildings_metric.loc[index].geometry,
+            tile_index=tile_index,
+            output_dir=output_dir,
+            margin_meters=margin_meters,
+            crop_mode=crop_mode,
             pilot=pilot,
         )
-        total_saved += len(saved_ids)
-        processed_ids.update(saved_ids)
-        index_features.extend(features)
+        if feature is not None:
+            index_features.append(feature)
 
-    pending_count = len(buildings) - len(processed_ids)
+    pending_count = len(buildings) - len(index_features)
     if pending_count:
         print(
             f"Warning: {pending_count} buildings were not cropped "
-            "(outside PNOA tiles or failed window)"
+            "(outside PNOA tiles or failed mosaic)"
         )
 
     write_building_index(index_features, output_dir)
-    print(f"Finished: {total_saved} building crops")
-    return total_saved
+    print(f"Finished: {len(index_features)} building crops")
+    return len(index_features)
 
 
 def main() -> None:
     defaults = get_crop_settings()
     parser = argparse.ArgumentParser(
         description=(
-            "Create one GeoTIFF crop per Catastro building and an index.geojson "
-            "with cadastral attributes for UI localization"
+            "Create one full GeoTIFF crop per Catastro building (mosaics PNOA "
+            "tiles when a building crosses tile edges) and index.geojson"
         )
     )
     parser.add_argument("--buildings-dir", type=Path, default=DEFAULT_BUILDINGS_DIR)

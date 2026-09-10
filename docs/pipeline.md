@@ -156,7 +156,7 @@ Al iniciar **limpia** `data/raw/pnoa/tiles/`.
 **Salida:** `data/raw/catastro/building_crops/building_XXXXXX.tif` + `.geojson`  
 y **`index.geojson`** (índice Catastro↔crop para la UI: RC, uso, paths, centroide).
 
-Genera un GeoTIFF (y geometría enriquecida) por edificio.
+Genera un GeoTIFF **completo** por edificio: si el edificio cruza bordes de teselas PNOA, **fusiona (mosaic)** las teselas necesarias en lugar de quedarse con un recorte parcial.
 
 ```powershell
 # Recomendado para YOLO (contexto alrededor del edificio)
