@@ -138,9 +138,10 @@ Al iniciar **limpia** `data/raw/catastro/tiles/` y borra `buildings.gml` / `buil
 
 **Módulo:** `src/data/crop_buildings.py`  
 **Entrada:** teselas PNOA + GeoJSON de Catastro  
-**Salida:** `data/raw/catastro/building_crops/building_XXXXXX.tif` + `.geojson`
+**Salida:** `data/raw/catastro/building_crops/building_XXXXXX.tif` + `.geojson`  
+y **`index.geojson`** (índice Catastro↔crop para la UI: RC, uso, paths, centroide).
 
-Genera un GeoTIFF (y geometría) por edificio.
+Genera un GeoTIFF (y geometría enriquecida) por edificio.
 
 ```powershell
 # Recomendado para YOLO (contexto alrededor del edificio)
@@ -232,7 +233,7 @@ data/
       tiles/                 # edificios por tesela 1 km
       buildings.gml
       buildings.geojson
-      building_crops/        # un crop por edificio
+      building_crops/        # un crop por edificio + index.geojson
   processed/
     yolo/
       data.yml

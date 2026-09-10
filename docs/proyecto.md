@@ -223,6 +223,7 @@ Un sistema capaz de, para un edificio catastral de la zona piloto:
 | Documento | Contenido |
 |-----------|-----------|
 | [`docs/pipeline.md`](pipeline.md) | Pipeline de datos implementado (comandos, carpetas) |
+| [`docs/ui-roadmap.md`](ui-roadmap.md) | Roadmap de interfaz (localizar → crop → cubierta → inclinación) |
 | [`ROADMAP.md`](../ROADMAP.md) | Roadmap histórico (orientado a YOLO); este doc es la visión actual |
 | `configs/pilot_area.yaml` | BBOX, PNOA, defaults de crop |
 
