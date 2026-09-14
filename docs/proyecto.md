@@ -222,6 +222,7 @@ Un sistema capaz de, para un edificio catastral de la zona piloto:
 
 | Documento | Contenido |
 |-----------|-----------|
+| [`docs/comandos.md`](comandos.md) | Chuleta de comandos: pipeline, API, GitHub |
 | [`docs/pipeline.md`](pipeline.md) | Pipeline de datos implementado (comandos, carpetas) |
 | [`docs/ui-roadmap.md`](ui-roadmap.md) | Roadmap de interfaz (localizar → crop → cubierta → inclinación) |
 | [`ROADMAP.md`](../ROADMAP.md) | Roadmap histórico (orientado a YOLO); este doc es la visión actual |

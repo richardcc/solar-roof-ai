@@ -127,13 +127,13 @@ Así “navegar crops” tiene sentido **dentro de un contexto** (filtro, munici
 - Cada `building_XXXXXX.geojson` incluye los mismos attrs para la ficha.
 - **Criterio:** se puede buscar un edificio por `reference` (RC) en el índice y abrir su crop.
 
-### UI-1 — Explorador + ficha (MVP)
+### UI-1 — Explorador + ficha (MVP) *(implementado)*
 
-- Mapa + búsqueda por RC.
-- Ficha con crop + overlay Catastro + datos básicos.
-- Navegación anterior/siguiente en resultados.
-- Stack sugerido: FastAPI + Leaflet (o MapLibre) + frontend simple.
-- **Criterio:** localizar un inmueble de Boadilla y ver su crop.
+- Mapa Leaflet + búsqueda por RC / id.
+- Ficha con crop PNOA + attrs Catastro + anterior/siguiente.
+- API FastAPI en `src/api/main.py`, front en `web/`.
+- Arranque: `.\scripts\run_api.ps1` → http://127.0.0.1:8000
+- **Criterio:** localizar un inmueble y ver su crop (requiere `index.geojson`).
 
 ### UI-2 — Taller de cubierta
 
@@ -181,9 +181,9 @@ La UI se construye **encima** del flujo Catastro → cubierta → LiDAR; no al r
 
 ## 9. Prioridad inmediata (UI)
 
-1. ~~**UI-0:** índice Catastro↔crop~~ → `python -m src.data.crop_buildings` genera `index.geojson`.
-2. **UI-1:** pantalla mapa + búsqueda RC + ficha con crop.
-3. Luego UI-2 cuando exista el refinador de cubierta.
+1. ~~**UI-0:** índice Catastro↔crop~~ → `crop_buildings` genera `index.geojson`.
+2. ~~**UI-1:** explorador + ficha~~ → `.\scripts\run_api.ps1`
+3. **UI-2:** taller de cubierta (refinar / limpiar tejado).
 
 ---
 
@@ -196,4 +196,4 @@ Sí tiene sentido la UI que planteas, con este orden:
 3. **Interfaz de limpiar / delimitar tejado.**  
 4. **Inclinación** (LiDAR).  
 
-Documentos relacionados: [`proyecto.md`](proyecto.md) (fases de producto), [`pipeline.md`](pipeline.md) (datos).
+Documentos relacionados: [`proyecto.md`](proyecto.md) (fases de producto), [`pipeline.md`](pipeline.md) (datos), [`comandos.md`](comandos.md) (chuleta operativa).

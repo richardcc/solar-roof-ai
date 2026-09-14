@@ -2,6 +2,8 @@
 
 Este documento describe el pipeline actual de **Solar Roof AI**: desde la descarga de ortofotos y Catastro hasta la generación del dataset YOLO.
 
+**Chuleta de comandos y scripts:** [`comandos.md`](comandos.md) (API, GitHub, pipeline).
+
 Zona piloto por defecto: **Boadilla del Monte (Madrid)**, definida en `configs/pilot_area.yaml`.
 
 ---
@@ -40,15 +42,25 @@ cd C:\Users\ricardo.alba\Projects\solar-roof-ai
 
 ### Sincronizar con GitHub
 
-```powershell
-# Solo bajar y subir commits ya hechos
-.\scripts\sync_github.ps1
+Ver la chuleta completa en [`comandos.md`](comandos.md). Resumen:
 
-# Commit de cambios locales + pull + push
+```powershell
+.\scripts\sync_github.ps1
 .\scripts\sync_github.ps1 -Commit -Message "Describe tu cambio"
 ```
 
 `wip.txt`, `.env` y credenciales se excluyen del commit automático.
+
+### Interfaz web (UI-1)
+
+Ver [`comandos.md`](comandos.md) § Interfaz. Resumen:
+
+```powershell
+.\scripts\run_api.ps1
+# Abrir http://127.0.0.1:8000
+```
+
+Requiere `data/raw/catastro/building_crops/index.geojson`.
 
 ---
 

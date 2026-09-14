@@ -20,17 +20,33 @@ WFS_TIMEOUT_SECONDS = 120
 TILE_SIZE_METERS = 1000
 
 
-def _prepare_gml_frame(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
-    """Convert datetime fields to GML-compatible ISO text values."""
-    gml_gdf = gdf.copy()
+def _prepare_export_frame(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
+    """Normalize dtypes so GeoJSON/GML writers do not choke on datetimes."""
+    export_gdf = gdf.copy()
 
-    for column in gml_gdf.columns:
-        if pd.api.types.is_datetime64_any_dtype(gml_gdf[column]):
-            gml_gdf[column] = gml_gdf[column].dt.strftime(
-                "%Y-%m-%dT%H:%M:%S"
+    for column in export_gdf.columns:
+        if column == "geometry":
+            continue
+        series = export_gdf[column]
+        if pd.api.types.is_datetime64_any_dtype(series):
+            export_gdf[column] = (
+                pd.to_datetime(series, utc=True, errors="coerce")
+                .dt.strftime("%Y-%m-%dT%H:%M:%S")
             )
+            continue
+        if pd.api.types.is_timedelta64_dtype(series):
+            export_gdf[column] = series.astype(str)
+            continue
+        if series.dtype == object:
+            sample = series.dropna().head(5)
+            if not sample.empty and all(
+                hasattr(value, "isoformat") for value in sample
+            ):
+                export_gdf[column] = series.map(
+                    lambda value: value.isoformat() if hasattr(value, "isoformat") else value
+                )
 
-    return gml_gdf
+    return export_gdf
 
 
 def _iter_tiles(
@@ -58,10 +74,14 @@ def download_catastro(
     max_lon: float | None = None,
     max_lat: float | None = None,
     bbox: tuple | None = None,
+    from_existing_tiles: bool = False,
 ):
     """
     Download building data from Catastro INSPIRE WFS.
     """
+    if from_existing_tiles:
+        return export_buildings_from_existing_tiles()
+
     if bbox is not None:
         min_lon, min_lat, max_lon, max_lat = bbox
     elif min_lon is None or min_lat is None or max_lon is None or max_lat is None:
@@ -181,45 +201,76 @@ def download_catastro(
         )
     logger.info("Catastro buildings after filter: %s / %s", len(gdf), raw_count)
 
-    output_file = CATASTRO_DIR / "buildings.gml"
+    export_gdf = _prepare_export_frame(gdf)
+    geojson_file = CATASTRO_DIR / "buildings.geojson"
+    gml_file = CATASTRO_DIR / "buildings.gml"
 
     try:
-        _prepare_gml_frame(gdf).to_file(output_file, driver="GML")
-
-        logger.info(f"Saved GML: {output_file}")
-
-        logger.info(
-            "Final statistics: tiles=%s, valid_tiles=%s, skipped_tiles=%s, "
-            "buildings=%s, crs=%s, bounds=%s",
-            len(tiles),
-            len(tile_frames),
-            skipped_tiles,
-            len(gdf),
-            gdf.crs,
-            tuple(round(value, 2) for value in gdf.total_bounds),
-        )
-
-        geojson_file = (
-            CATASTRO_DIR / "buildings.geojson"
-        )
-
-        gdf.to_crs(GEOJSON_CRS).to_file(
-            geojson_file,
-            driver="GeoJSON",
-        )
-
-        logger.info(
-            f"Saved GeoJSON: {geojson_file}"
-        )
-
-        return gdf
-
+        export_gdf.to_crs(GEOJSON_CRS).to_file(geojson_file, driver="GeoJSON")
+        logger.info("Saved GeoJSON: %s", geojson_file)
     except Exception as ex:
-
-        logger.error("Unable to write output files: %s", ex)
-
+        logger.error("Unable to write GeoJSON: %s", ex)
         raise
+
+    try:
+        export_gdf.to_file(gml_file, driver="GML")
+        logger.info("Saved GML: %s", gml_file)
+    except Exception as ex:
+        logger.warning("Unable to write GML (GeoJSON is available): %s", ex)
+
+    logger.info(
+        "Final statistics: tiles=%s, valid_tiles=%s, skipped_tiles=%s, "
+        "buildings=%s, crs=%s, bounds=%s",
+        len(tiles),
+        len(tile_frames),
+        skipped_tiles,
+        len(gdf),
+        gdf.crs,
+        tuple(round(value, 2) for value in gdf.total_bounds),
+    )
+
+    return export_gdf
+
+
+def export_buildings_from_existing_tiles() -> gpd.GeoDataFrame:
+    """Rebuild filtered buildings.geojson from already downloaded tile GeoJSONs."""
+    tile_dir = CATASTRO_DIR / "tiles"
+    files = sorted(tile_dir.glob("buildings_*.geojson"))
+    if not files:
+        raise FileNotFoundError(f"No tile GeoJSON files found in {tile_dir}")
+
+    frames = [gpd.read_file(path) for path in files]
+    gdf = gpd.GeoDataFrame(pd.concat(frames, ignore_index=True), crs=frames[0].crs)
+    raw_count = len(gdf)
+    gdf = filter_buildings(gdf)
+    if gdf.empty:
+        raise RuntimeError(
+            "Catastro filter removed all buildings. "
+            "Relax catastro.* settings in configs/pilot_area.yaml"
+        )
+    logger.info("Catastro buildings after filter: %s / %s", len(gdf), raw_count)
+
+    export_gdf = _prepare_export_frame(gdf)
+    geojson_file = CATASTRO_DIR / "buildings.geojson"
+    gml_file = CATASTRO_DIR / "buildings.gml"
+    export_gdf.to_crs(GEOJSON_CRS).to_file(geojson_file, driver="GeoJSON")
+    logger.info("Saved GeoJSON: %s", geojson_file)
+    try:
+        export_gdf.to_file(gml_file, driver="GML")
+        logger.info("Saved GML: %s", gml_file)
+    except Exception as ex:
+        logger.warning("Unable to write GML (GeoJSON is available): %s", ex)
+    return export_gdf
 
 
 if __name__ == "__main__":
-    download_catastro()
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Download Catastro buildings")
+    parser.add_argument(
+        "--from-existing-tiles",
+        action="store_true",
+        help="Rebuild buildings.geojson from data/raw/catastro/tiles without WFS download",
+    )
+    args = parser.parse_args()
+    download_catastro(from_existing_tiles=args.from_existing_tiles)

@@ -211,6 +211,24 @@ def write_building_index(features: list[dict], output_dir: Path) -> Path:
     return index_path
 
 
+def rebuild_index_from_crops(output_dir: str | Path = DEFAULT_OUTPUT_DIR) -> Path:
+    """Rebuild index.geojson from existing building_*.geojson sidecars (no re-crop)."""
+    output_dir = Path(output_dir)
+    features: list[dict] = []
+    for path in sorted(output_dir.glob("building_*.geojson")):
+        document = json.loads(path.read_text(encoding="utf-8"))
+        if document.get("type") == "FeatureCollection":
+            features.extend(document.get("features") or [])
+        elif document.get("type") == "Feature":
+            features.append(document)
+    if not features:
+        raise FileNotFoundError(
+            f"No building_*.geojson sidecars found in {output_dir}. "
+            "Run crop_buildings first."
+        )
+    return write_building_index(features, output_dir)
+
+
 def _load_tile_index(tile_paths: list[Path]) -> gpd.GeoDataFrame:
     """Spatial index of PNOA tile footprints."""
     records = []
@@ -294,10 +312,18 @@ def crop_one_building(
 
     # Prefer a single tile that fully contains the crop; else mosaic all hits.
     fully_containing = hits[hits.contains(crop_geom)]
-    if not fully_containing.empty:
-        # Choose the tile with largest overlap area as tie-breaker.
-        overlap = fully_containing.intersection(crop_geom).area
-        selected = fully_containing.loc[[overlap.idxmax()]]
+    if len(fully_containing) == 1:
+        selected = fully_containing
+    elif len(fully_containing) > 1:
+        # Area must be computed in a projected CRS (tiles are often EPSG:4326).
+        overlap_metric = (
+            fully_containing.to_crs(METRIC_CRS)
+            .intersection(
+                gpd.GeoSeries([crop_metric], crs=METRIC_CRS).iloc[0]
+            )
+            .area
+        )
+        selected = fully_containing.loc[[overlap_metric.idxmax()]]
     else:
         selected = hits
 
@@ -437,7 +463,16 @@ def main() -> None:
         default=defaults["mode"],
         help="rectangle keeps context around the building; shape masks outside it",
     )
+    parser.add_argument(
+        "--rebuild-index-only",
+        action="store_true",
+        help="Rebuild index.geojson from existing building_*.geojson without re-cropping",
+    )
     args = parser.parse_args()
+
+    if args.rebuild_index_only:
+        rebuild_index_from_crops(args.output_dir)
+        return
 
     crop_all_buildings(
         buildings_dir=args.buildings_dir,

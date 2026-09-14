@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Solar Roof AI</title>
+    <link
+      rel="stylesheet"
+      href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+      integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+      crossorigin=""
+    />
+    <link rel="stylesheet" href="/static/app.css" />
+  </head>
+  <body>
+    <div class="app work-collapsed">
+      <aside class="sidebar">
+        <header class="brand">
+          <h1>Solar Roof AI</h1>
+          <p id="pilot-label">Zona piloto</p>
+        </header>
+
+        <section class="search-block">
+          <label for="search-input">Localizar inmueble</label>
+          <div class="search-row">
+            <input
+              id="search-input"
+              type="search"
+              placeholder="Referencia catastral, building_id…"
+              autocomplete="off"
+            />
+            <button id="search-btn" type="button">Buscar</button>
+          </div>
+          <p id="result-count" class="muted">—</p>
+        </section>
+
+        <section class="list-block">
+          <ul id="results"></ul>
+        </section>
+      </aside>
+
+      <main class="map-pane">
+        <div id="map"></div>
+        <div id="status" class="status">Cargando…</div>
+      </main>
+
+      <div
+        id="work-splitter"
+        class="work-splitter hidden"
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="Redimensionar panel de trabajo"
+        title="Arrastra para redimensionar"
+      ></div>
+
+      <aside id="detail" class="detail-pane hidden">
+        <header class="detail-toolbar">
+          <div class="detail-title">
+            <h2>Taller de cubierta</h2>
+            <p id="detail-ref" class="muted">—</p>
+          </div>
+          <div class="actions">
+            <button id="prev-btn" type="button" class="ghost">Anterior</button>
+            <button id="next-btn" type="button" class="ghost">Siguiente</button>
+          </div>
+        </header>
+
+        <details class="meta-fold">
+          <summary>Ficha del inmueble</summary>
+          <dl id="detail-fields"></dl>
+          <a id="catastro-link" class="external" target="_blank" rel="noopener"
+            >Abrir en Catastro</a
+          >
+        </details>
+
+        <div class="tool-bar" id="tool-bar">
+          <div class="tool-group" aria-label="Regiones">
+            <span class="tool-group-label">Regiones</span>
+            <button
+              type="button"
+              class="tool primary-tool"
+              data-action="detect-regions"
+              title="Separa huellas Catastro / componentes de máscara"
+            >
+              Detectar regiones
+            </button>
+            <button type="button" class="tool" data-action="clear-region" title="Quitar selección">
+              Todas
+            </button>
+            <span id="region-status" class="muted ortho-res-label">Ninguna seleccionada</span>
+          </div>
+          <div class="tool-group" aria-label="Algoritmos">
+            <span class="tool-group-label">Algoritmos</span>
+            <button type="button" class="tool" data-algo="seed_catastro" title="Rasterizar polígono Catastro">
+              Seed Catastro
+            </button>
+            <button type="button" class="tool" data-algo="dilate" title="Expandir máscara (para aleros)">
+              Dilatar
+            </button>
+            <button type="button" class="tool" data-algo="erode" title="Encoger máscara">
+              Erosionar
+            </button>
+            <button type="button" class="tool" data-algo="buffer_color" title="Buffer + filtrar por color de tejado">
+              Buffer + color
+            </button>
+            <button type="button" class="tool" data-algo="region_grow" title="Crecer desde Catastro por similitud">
+              Region growing
+            </button>
+            <button type="button" class="tool" data-algo="grabcut" title="GrabCut (OpenCV)">
+              GrabCut
+            </button>
+          </div>
+          <div class="tool-group" aria-label="Limpieza">
+            <span class="tool-group-label">Limpieza</span>
+            <button type="button" class="tool" data-algo="remove_shadows">
+              Quitar sombras
+            </button>
+            <button type="button" class="tool" data-algo="remove_water">
+              Quitar piscinas
+            </button>
+            <button type="button" class="tool" data-algo="remove_nonroof">
+              Quitar no-cubierta
+            </button>
+          </div>
+          <div class="tool-group" aria-label="Manual">
+            <span class="tool-group-label">Manual</span>
+            <button type="button" class="tool tool-mode active" data-mode="roof">Tejado</button>
+            <button type="button" class="tool tool-mode" data-mode="erase">Borrar</button>
+            <button type="button" class="tool tool-mode" data-mode="shadow">Sombra</button>
+            <button type="button" class="tool tool-mode" data-mode="pool">Piscina</button>
+            <button type="button" class="tool tool-mode" data-mode="exclude">Excluir</button>
+            <label class="brush-size">
+              Pincel
+              <input id="brush-size" type="range" min="4" max="48" value="16" />
+            </label>
+          </div>
+          <div class="tool-group" aria-label="Máscara">
+            <span class="tool-group-label">Máscara</span>
+            <button type="button" class="tool" data-action="reload-mask">Recargar</button>
+            <button type="button" class="tool" data-action="clear-mask">Limpiar vista</button>
+          </div>
+          <div class="tool-group" aria-label="Ortofoto">
+            <span class="tool-group-label">Ortofoto</span>
+            <button
+              type="button"
+              class="tool primary-tool"
+              id="hires-btn"
+              title="Descarga PNOA hi-res solo de este inmueble (caché local)"
+            >
+              Cargar hi-res
+            </button>
+            <span id="ortho-res-label" class="muted ortho-res-label">—</span>
+          </div>
+        </div>
+
+        <div class="layer-toggles" id="layer-toggles">
+          <label><input type="checkbox" data-layer="roof" checked /> Tejado</label>
+          <label><input type="checkbox" data-layer="shadow" checked /> Sombra</label>
+          <label><input type="checkbox" data-layer="pool" checked /> Piscina</label>
+          <label><input type="checkbox" data-layer="exclude" checked /> Excluido</label>
+          <label><input type="checkbox" data-layer="catastro" checked /> Catastro</label>
+        </div>
+
+        <div class="workbench">
+          <div class="canvas-wrap">
+            <p class="crop-label">Ortofoto · edición de cubierta</p>
+            <div class="canvas-stage" id="canvas-stage">
+              <div class="canvas-world" id="canvas-world">
+                <img id="crop-image" alt="Crop del edificio" draggable="false" />
+                <img
+                  id="crop-catastro-image"
+                  class="catastro-overlay"
+                  alt="Overlay Catastro"
+                  draggable="false"
+                />
+                <img id="mask-overlay" class="mask-overlay" alt="" draggable="false" />
+                <img id="regions-overlay" class="regions-overlay" alt="" draggable="false" />
+                <canvas id="mask-canvas"></canvas>
+              </div>
+            </div>
+            <div class="viewer-controls">
+              <button type="button" class="tool" id="zoom-fit-btn">Ajustar</button>
+              <button type="button" class="tool" id="zoom-100-btn">1:1</button>
+              <button type="button" class="tool" id="zoom-in-btn">+</button>
+              <button type="button" class="tool" id="zoom-out-btn">−</button>
+              <span id="viewer-zoom-label" class="viewer-zoom-label">100%</span>
+            </div>
+            <p id="mask-status" class="muted mask-status">Sin máscara</p>
+          </div>
+
+          <div class="side-stack">
+            <div class="preview-card regions-card">
+              <p class="crop-label">Regiones detectadas</p>
+              <div class="regions-list-wrap">
+                <ul id="regions-list" class="regions-list">
+                  <li class="muted">Pulsa «Detectar regiones»</li>
+                </ul>
+              </div>
+            </div>
+            <div class="preview-card">
+              <p class="crop-label">Referencia Catastro</p>
+              <div class="preview-stage">
+                <img id="crop-catastro-thumb" alt="Miniatura Catastro" />
+              </div>
+            </div>
+            <div class="preview-card view-3d">
+              <p class="crop-label">Mapa 3D del tejado</p>
+              <div class="view-3d-body">
+                <p>Pendiente de LiDAR</p>
+                <span class="muted"
+                  >Tras aceptar la cubierta se levantarán planos 3D (pendiente /
+                  orientación).</span
+                >
+              </div>
+            </div>
+          </div>
+        </div>
+      </aside>
+    </div>
+
+    <script
+      src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+      integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+      crossorigin=""
+    ></script>
+    <script src="/static/app.js"></script>
+  </body>
+</html>
