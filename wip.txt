@@ -41,3 +41,5 @@ cd C:\Users\Richard\cvat
 docker compose up -d
 richardcc
 L@ranoa42
+
+http://localhost:8090
